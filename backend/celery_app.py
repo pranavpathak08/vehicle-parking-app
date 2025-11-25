@@ -1,7 +1,12 @@
 import os
+import sys
 from celery import Celery
 from dotenv import load_dotenv
 from celery.schedules import crontab
+
+# Add current directory to Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, current_dir)
 
 load_dotenv()
 
@@ -11,7 +16,6 @@ celery = Celery(
     "vehicle_parking_app",
     broker=REDIS_URL,
     backend=REDIS_URL,
-    include=["tasks.daily_reminder"]  # explicitly include task
 )
 
 celery.conf.update(
@@ -29,4 +33,5 @@ celery.conf.update(
     }
 )
 
-celery.autodiscover_tasks(["tasks"])
+# Import the task AFTER celery is configured
+# from tasks.daily_reminder import send_daily_reminder

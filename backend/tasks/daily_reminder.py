@@ -1,16 +1,15 @@
 from celery_app import celery
-from flask_mail import Message
+from flask_mail import Message, Mail
 from datetime import datetime, timedelta
 import os
 
-from app import create_app  # absolute import
-from models import User, Reservation
-from flask_mail import Mail
-
-@celery.task(name="tasks.daily_reminder.send_daily_reminder")
+@celery.task(name="tasks.daily_reminder.send_daily_reminder", bind=False)
 def send_daily_reminder():
     """Daily reminder at 6 PM to users who haven't booked parking today"""
-
+    
+    from app import create_app
+    from models import User, Reservation
+    
     app = create_app()
     mail = Mail(app)
 
