@@ -29,9 +29,15 @@ celery.conf.update(
             "task": "tasks.daily_reminder.send_daily_reminder",
             "schedule": crontab(hour=18, minute=0),
             "args": ()
+        },
+        "monthly-report-task": {
+            "task": "tasks.monthly_report.send_monthly_report",
+            "schedule": crontab(day_of_month=1, hour=9, minute=0),
+            "args": ()
         }
     }
 )
 
 # Import the task AFTER celery is configured
 # from tasks.daily_reminder import send_daily_reminder
+# from tasks.monthly_report import send_monthly_report
