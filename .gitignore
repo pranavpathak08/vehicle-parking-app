@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.env
+venv/
+env/
+
+# Flask
+instance/
+*.sqlite3
+
+# VSCode
+.vscode/
+
+# Mac
+.DS_Store
+
+# Celery Beat
+celerybeat-schedule
