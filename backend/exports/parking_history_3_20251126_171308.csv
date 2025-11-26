@@ -1,0 +1,9 @@
+Reservation ID,Parking Lot,Address,Spot Number,Check-in Time,Check-out Time,Duration,Cost (₹),Status,Booking Date
+2,Main Parking,XYZ Road,1,2025-11-25 19:19:33,2025-11-25 19:22:10,0.04 hours,30.00,Completed,2025-11-25 19:19:33
+4,Main Parking,XYZ Road,5,2025-10-31 15:05:00,2025-10-31 18:05:00,3.00 hours,90.00,Completed,2025-10-31 15:05:00
+9,Main Parking,XYZ Road,5,2025-10-28 14:00:00,N/A,Active,0.00,Active,2025-10-28 14:00:00
+3,Main Parking,XYZ Road,3,2025-10-17 15:42:00,2025-10-17 20:42:00,5.00 hours,150.00,Completed,2025-10-17 15:42:00
+6,Main Parking,XYZ Road,2,2025-10-17 08:05:00,2025-10-17 09:05:00,1.00 hours,30.00,Completed,2025-10-17 08:05:00
+7,Main Parking,XYZ Road,4,2025-10-15 10:47:00,2025-10-15 11:47:00,1.00 hours,30.00,Completed,2025-10-15 10:47:00
+8,Main Parking,XYZ Road,1,2025-10-11 12:40:00,2025-10-11 13:40:00,1.00 hours,30.00,Completed,2025-10-11 12:40:00
+5,Main Parking,XYZ Road,4,2025-10-04 11:25:00,2025-10-04 14:25:00,3.00 hours,90.00,Completed,2025-10-04 11:25:00

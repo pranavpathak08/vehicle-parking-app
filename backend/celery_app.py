@@ -25,11 +25,14 @@ celery.conf.update(
     result_serializer="json",
     accept_content=["json"],
     beat_schedule={
+        # Daily reminder at 6 PM
         "daily-reminder-task": {
             "task": "tasks.daily_reminder.send_daily_reminder",
             "schedule": crontab(hour=18, minute=0),
             "args": ()
         },
+        # Monthly report on 1st of every month at 9 AM
+        # IMPORTANT: Task name must match the folder name (monthly_reminder, not monthly_report)
         "monthly-report-task": {
             "task": "tasks.monthly_report.send_monthly_report",
             "schedule": crontab(day_of_month=1, hour=9, minute=0),
@@ -38,6 +41,5 @@ celery.conf.update(
     }
 )
 
-# Import the task AFTER celery is configured
-# from tasks.daily_reminder import send_daily_reminder
-# from tasks.monthly_report import send_monthly_report
+# DO NOT import tasks here - this causes circular imports
+# Tasks will be auto-discovered when imported elsewhere

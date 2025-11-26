@@ -1,10 +1,14 @@
 # parking_routes.py
 
-from flask import Blueprint, request, jsonify
-from models import db, ParkingLot, ParkingSpot, Reservation
+from flask import Blueprint, request, jsonify, send_file
+from models import db, ParkingLot, ParkingSpot, Reservation, User, ExportJob
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
 import math
+import os
+
+# Don't import the task at module level - causes circular import
+# We'll import it inside the function that needs it
 
 user_bp = Blueprint("user", __name__)
 
@@ -137,9 +141,121 @@ def my_reservations():
             "spot_id": r.spot_id,
             "spot_number": r.spot.spot_number if r.spot else None,
             "lot_id": r.spot.lot_id if r.spot else None,
+            "lot_name": r.spot.lot.name if r.spot and r.spot.lot else None,
             "parking_timestamp": r.parking_timestamp.isoformat() if r.parking_timestamp else None,
             "leaving_timestamp": r.leaving_timestamp.isoformat() if r.leaving_timestamp else None,
             "parking_cost": r.parking_cost,
             "status": r.status
         })
     return jsonify(out), 200
+
+
+# ============= EXPORT ROUTES =============
+
+@user_bp.route("/export/trigger", methods=["POST"])
+@jwt_required()
+def trigger_export():
+    """
+    Trigger CSV export job for current user
+    """
+    # Import task here to avoid circular import
+    from tasks.export_csv import export_user_reservations
+    
+    user_id = get_jwt_identity()
+    
+    # Get user details
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+    
+    if not user.email:
+        return jsonify({"msg": "Email not set. Cannot send export notification."}), 400
+    
+    # Check if user has any pending or processing jobs
+    existing_job = ExportJob.query.filter(
+        ExportJob.user_id == user_id,
+        ExportJob.status.in_(["pending", "processing"])
+    ).first()
+    
+    if existing_job:
+        return jsonify({
+            "msg": "Export already in progress",
+            "job_id": existing_job.id,
+            "status": existing_job.status
+        }), 409
+    
+    try:
+        # Create new export job record
+        job = ExportJob(user_id=user_id, status="pending")
+        db.session.add(job)
+        db.session.commit()
+        
+        # Trigger async task
+        task = export_user_reservations.delay(user_id, user.email, user.username)
+        
+        return jsonify({
+            "msg": "Export job started",
+            "job_id": job.id,
+            "task_id": task.id,
+            "status": "pending"
+        }), 202
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Error triggering export", "error": str(e)}), 500
+
+
+@user_bp.route("/export/status", methods=["GET"])
+@jwt_required()
+def export_status():
+    """
+    Get status of user's export jobs
+    """
+    user_id = get_jwt_identity()
+    
+    # Get all jobs for this user, ordered by most recent
+    jobs = ExportJob.query.filter_by(user_id=user_id).order_by(
+        ExportJob.requested_at.desc()
+    ).limit(10).all()
+    
+    out = []
+    for job in jobs:
+        out.append({
+            "id": job.id,
+            "status": job.status,
+            "requested_at": job.requested_at.isoformat() if job.requested_at else None,
+            "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+            "file_available": job.status == "done" and job.file_path is not None
+        })
+    
+    return jsonify(out), 200
+
+
+@user_bp.route("/export/download/<int:job_id>", methods=["GET"])
+@jwt_required()
+def download_export(job_id):
+    """
+    Download CSV file for completed export job
+    """
+    user_id = get_jwt_identity()
+    
+    job = ExportJob.query.filter_by(id=job_id, user_id=user_id).first()
+    
+    if not job:
+        return jsonify({"msg": "Export job not found"}), 404
+    
+    if job.status != "done":
+        return jsonify({"msg": "Export not ready yet", "status": job.status}), 400
+    
+    if not job.file_path or not os.path.exists(job.file_path):
+        return jsonify({"msg": "Export file not found"}), 404
+    
+    try:
+        return send_file(
+            job.file_path,
+            mimetype='text/csv',
+            as_attachment=True,
+            download_name=os.path.basename(job.file_path)
+        )
+    except Exception as e:
+        return jsonify({"msg": "Error downloading file", "error": str(e)}), 500
