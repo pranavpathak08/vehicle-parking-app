@@ -7,16 +7,18 @@ from datetime import datetime
 import math
 import os
 
-# Don't import the task at module level - causes circular import
-# We'll import it inside the function that needs it
-
 user_bp = Blueprint("user", __name__)
+
+# Import cache from app
+from app import cache
 
 @user_bp.route("/lots", methods=["GET"])
 @jwt_required()
+@cache.cached(timeout=60, query_string=True)  # Cache for 60 seconds
 def list_available_lots():
     """
     List lots with available counts. Accessible to logged in users.
+    CACHED: 60 seconds - Frequently accessed, changes moderately
     """
     lots = ParkingLot.query.order_by(ParkingLot.created_at.desc()).all()
     out = []
@@ -42,6 +44,7 @@ def book_spot():
     """
     Book first available spot in a lot for the current user.
     Request body: {"lot_id": <int>}
+    NO CACHE: Write operation that modifies data
     """
     user_id = get_jwt_identity()
     data = request.get_json() or {}
@@ -54,9 +57,6 @@ def book_spot():
     if existing:
         return jsonify({"msg": "You already have an active reservation", "reservation_id": existing.id}), 409
 
-    #Atomic attempt to allocate a spot.
-    #We'll use a session transaction and re-check before commit (optimistic approach).
-
     try:
         with db.session.begin_nested():
             # find first available spot in the requested lot
@@ -64,7 +64,6 @@ def book_spot():
 
             if not spot:
                 return jsonify({"msg": "no available spot in this lot"}), 409
-
 
             # Marking spot occupied and creating reservation
             spot.status = "O"
@@ -76,8 +75,14 @@ def book_spot():
                 created_at=datetime.utcnow()
             )
             db.session.add(reservation)
+        
         # commit transaction
         db.session.commit()
+        
+        # INVALIDATE CACHE after booking
+        cache.delete_memoized(list_available_lots)
+        cache.delete_memoized(my_reservations)
+        
         return jsonify({
             "msg": "Parking spot booked successfully",
             "lot_id": lot_id,
@@ -96,6 +101,7 @@ def leave_spot():
     """
     Release an active reservation
     Request body: {"reservation_id": <int>}
+    NO CACHE: Write operation that modifies data
     """
     user_id = get_jwt_identity()
     data = request.get_json() or {}
@@ -119,6 +125,11 @@ def leave_spot():
         # set spot available
         res.spot.status = "A"
         db.session.commit()
+        
+        # INVALIDATE CACHE after leaving
+        cache.delete_memoized(list_available_lots)
+        cache.delete_memoized(my_reservations)
+        
         return jsonify({
             "msg": "released",
             "parking_cost": res.parking_cost,
@@ -131,7 +142,12 @@ def leave_spot():
 
 @user_bp.route("/my_reservations", methods=["GET"])
 @jwt_required()
+@cache.memoize(timeout=120)  # Cache per user for 2 minutes
 def my_reservations():
+    """
+    Get user's reservations
+    CACHED: 120 seconds per user - Personal data that changes occasionally
+    """
     user_id = get_jwt_identity()
     reservations = Reservation.query.filter_by(user_id=user_id).order_by(Reservation.created_at.desc()).all()
     out = []
@@ -157,13 +173,12 @@ def my_reservations():
 def trigger_export():
     """
     Trigger CSV export job for current user
+    NO CACHE: Trigger operation
     """
-    # Import task here to avoid circular import
     from tasks.export_csv import export_user_reservations
     
     user_id = get_jwt_identity()
     
-    # Get user details
     user = User.query.get(user_id)
     if not user:
         return jsonify({"msg": "User not found"}), 404
@@ -185,7 +200,6 @@ def trigger_export():
         }), 409
     
     try:
-        # Create new export job record
         job = ExportJob(user_id=user_id, status="pending")
         db.session.add(job)
         db.session.commit()
@@ -207,13 +221,14 @@ def trigger_export():
 
 @user_bp.route("/export/status", methods=["GET"])
 @jwt_required()
+@cache.memoize(timeout=30)  # Cache for 30 seconds - Status changes frequently
 def export_status():
     """
     Get status of user's export jobs
+    CACHED: 30 seconds per user
     """
     user_id = get_jwt_identity()
     
-    # Get all jobs for this user, ordered by most recent
     jobs = ExportJob.query.filter_by(user_id=user_id).order_by(
         ExportJob.requested_at.desc()
     ).limit(10).all()
@@ -236,6 +251,7 @@ def export_status():
 def download_export(job_id):
     """
     Download CSV file for completed export job
+    NO CACHE: File download
     """
     user_id = get_jwt_identity()
     

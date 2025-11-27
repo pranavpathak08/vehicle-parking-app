@@ -3,14 +3,16 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_mail import Mail
+from flask_caching import Cache
 
 load_dotenv()
 
 from models import db, User
 from flask_jwt_extended import JWTManager
 
-# Initialize Flask-Mail globally
+# Initialize extensions globally
 mail = Mail()
+cache = Cache()
 
 def create_app():
     app = Flask(__name__, static_folder=None)
@@ -30,9 +32,22 @@ def create_app():
     app.config["MAIL_PASSWORD"] = os.getenv("MAIL_PASSWORD")
     app.config["MAIL_DEFAULT_SENDER"] = os.getenv("MAIL_USERNAME")  # Use same as username
 
+    cache_type = os.getenv("CACHE_TYPE", "RedisCache")
+    
+    if cache_type == "RedisCache":
+        app.config["CACHE_TYPE"] = "RedisCache"
+        app.config["CACHE_REDIS_URL"] = os.getenv("REDIS_URL", "redis://localhost:6379/1")  # Use DB 1 for cache
+        app.config["CACHE_DEFAULT_TIMEOUT"] = 300  # 5 minutes default
+        app.config["CACHE_KEY_PREFIX"] = "parking_cache:"
+    else:
+        # Fallback to SimpleCache for development
+        app.config["CACHE_TYPE"] = "SimpleCache"
+        app.config["CACHE_DEFAULT_TIMEOUT"] = 300
+
     db.init_app(app)
     jwt = JWTManager(app)
     mail.init_app(app)  # Initialize mail with app
+    cache.init_app(app)
 
     from routes.auth_routes import auth_bp
     from routes.admin_routes import admin_bp
@@ -45,6 +60,12 @@ def create_app():
     @app.route("/health", methods=["GET"])
     def health():
         return jsonify({"status": "ok"}), 200
+
+    @app.route("/cache/clear", methods=["POST"])
+    def clear_cache():
+        """Admin endpoint to manually clear cache"""
+        cache.clear()
+        return jsonify({"msg": "Cache cleared successfully"}), 200
 
     with app.app_context():
         db.create_all()
