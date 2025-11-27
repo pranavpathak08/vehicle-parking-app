@@ -8,9 +8,8 @@ from functools import wraps
 
 admin_bp = Blueprint("admin", __name__)
 
-def get_cache():
-    """Get cache instance from current app"""
-    return current_app.extensions['cache']
+# REMOVE THIS LINE:
+# from app import cache
 
 def admin_required(fn):
     @wraps(fn)
@@ -25,10 +24,6 @@ def admin_required(fn):
 @admin_bp.route("/lots", methods=["POST"])
 @admin_required
 def create_lot():
-    """
-    Create a new parking lot
-    NO CACHE: Write operation
-    """
     data = request.get_json() or {}
     name = data.get("name")
     price_per_hour = float(data.get("price_per_hour", 0.0))
@@ -59,12 +54,11 @@ def create_lot():
             spots.append(spot)
         db.session.commit()
         
-        # INVALIDATE CACHE after creating lot
-        cache = get_cache()
-        current_bucket = int(datetime.utcnow().timestamp() // 180)
-        for i in range(2):
-            cache.delete(f"admin_lots_{current_bucket - i}")
-            cache.delete(f"user_lots_{int((current_bucket - i) * 180 // 60)}")
+        # INVALIDATE CACHE
+        cache = current_app.cache
+        cache.delete('admin_lots')
+        cache.delete('user_lots')
+        cache.delete('admin_dashboard_stats')
         
         return jsonify({
             "msg": "lot created",
@@ -78,14 +72,8 @@ def create_lot():
 @admin_bp.route("/lots", methods=["GET"])
 @admin_required
 def list_lots():
-    """
-    List all parking lots with availability
-    CACHED: 180 seconds - Admin dashboard data
-    """
-    cache = get_cache()
-    
-    # Manual caching with timestamp-based key
-    cache_key = f"admin_lots_{int(datetime.utcnow().timestamp() // 180)}"
+    cache = current_app.cache
+    cache_key = 'admin_lots'
     
     cached_data = cache.get(cache_key)
     if cached_data is not None:
@@ -109,19 +97,15 @@ def list_lots():
             "created_at": l.created_at.isoformat()
         })
     
-    cache.get(cache_key, out, timeout=180)
+    cache.set(cache_key, out, timeout=180)
     return jsonify(out), 200
 
 
 @admin_bp.route("/lots/<int:lot_id>/spots", methods=["GET"])
 @admin_required
 def list_spots_for_lot(lot_id):
-    """
-    List all spots in a parking lot
-    CACHED: 60 seconds per lot - Spot status changes moderately
-    """
-    cache = get_cache()
-    cache_key = f"admin_spots_{lot_id}_{int(datetime.utcnow().timestamp() // 60)}"
+    cache = current_app.cache
+    cache_key = f'admin_spots_{lot_id}'
     
     cached_data = cache.get(cache_key)
     if cached_data is not None:
@@ -142,7 +126,6 @@ def list_spots_for_lot(lot_id):
             "created_at": s.created_at.isoformat()
         }
 
-        # include current reservation info if occupied
         if s.status == "O" and s.reservation:
             r = s.reservation
             spot_info["reservation"] = {
@@ -154,7 +137,7 @@ def list_spots_for_lot(lot_id):
         out.append(spot_info)
     
     result = {"lot": {"id": lot.id, "name": lot.name}, "spots": out}
-    cache.get(cache_key, result, timeout=60)
+    cache.set(cache_key, result, timeout=60)
     
     return jsonify(result), 200
 
@@ -162,10 +145,6 @@ def list_spots_for_lot(lot_id):
 @admin_bp.route("/lots/<int:lot_id>", methods=["PUT"])
 @admin_required
 def update_lot(lot_id):
-    """
-    Update parking lot details
-    NO CACHE: Write operation
-    """
     data = request.get_json() or {}
     lot = ParkingLot.query.get(lot_id)
 
@@ -194,9 +173,7 @@ def update_lot(lot_id):
                 return jsonify({"msg": "number_of_spots must be >= 0"}), 400
 
             current_count = lot.number_of_spots
-            if new_count == current_count:
-                pass
-            elif new_count > current_count:
+            if new_count > current_count:
                 start = 0
                 last_spot = lot.spots.order_by(ParkingSpot.spot_number.desc()).first()
                 if last_spot:
@@ -208,9 +185,9 @@ def update_lot(lot_id):
                     spot = ParkingSpot(lot_id=lot.id, spot_number=sn, status="A", created_at=datetime.utcnow())
                     db.session.add(spot)    
                 lot.number_of_spots = new_count
-            else:
+            elif new_count < current_count:
                 remove_count = current_count - new_count
-                spots_to_remove = lot.spots.filter_by().order_by(ParkingSpot.spot_number.desc()).limit(remove_count).all()
+                spots_to_remove = lot.spots.order_by(ParkingSpot.spot_number.desc()).limit(remove_count).all()
 
                 for s in spots_to_remove:
                     if s.status != "A":
@@ -222,12 +199,12 @@ def update_lot(lot_id):
 
         db.session.commit()
         
-        # INVALIDATE CACHE after updating lot
-        cache = get_cache()
-        current_bucket = int(datetime.utcnow().timestamp() // 180)
-        for i in range(2):
-            cache.delete(f"admin_lots_{current_bucket - i}")
-            cache.delete(f"admin_spots_{lot_id}_{int(datetime.utcnow().timestamp() // 60) - i}")
+        # INVALIDATE CACHE
+        cache = current_app.cache
+        cache.delete('admin_lots')
+        cache.delete(f'admin_spots_{lot_id}')
+        cache.delete('user_lots')
+        cache.delete('admin_dashboard_stats')
         
         return jsonify({"msg": "lot updated", "lot_id": lot.id}), 200
     except Exception as e:
@@ -238,10 +215,6 @@ def update_lot(lot_id):
 @admin_bp.route("/lots/<int:lot_id>", methods=["DELETE"])
 @admin_required
 def delete_lot(lot_id):
-    """
-    Delete a parking lot
-    NO CACHE: Write operation
-    """
     lot = ParkingLot.query.get(lot_id)
     if not lot:
         return jsonify({"msg": "lot not found"}), 404
@@ -256,12 +229,12 @@ def delete_lot(lot_id):
         db.session.delete(lot)
         db.session.commit()
         
-        # INVALIDATE CACHE after deleting lot
-        cache = get_cache()
-        current_bucket = int(datetime.utcnow().timestamp() // 180)
-        for i in range(2):
-            cache.delete(f"admin_lots_{current_bucket - i}")
-            cache.delete(f"admin_spots_{lot_id}_{int(datetime.utcnow().timestamp() // 60) - i}")
+        # INVALIDATE CACHE
+        cache = current_app.cache
+        cache.delete('admin_lots')
+        cache.delete(f'admin_spots_{lot_id}')
+        cache.delete('user_lots')
+        cache.delete('admin_dashboard_stats')
         
         return jsonify({"msg": "lot deleted"}), 200
     except Exception as e:
@@ -269,49 +242,30 @@ def delete_lot(lot_id):
         return jsonify({"msg": "error deleting lot", "error":str(e)}), 500
 
 
-# ============= DASHBOARD/ANALYTICS ROUTES (Heavily Cached) =============
-
 @admin_bp.route("/dashboard/stats", methods=["GET"])
 @admin_required
 def dashboard_stats():
-    """
-    Get dashboard statistics
-    CACHED: 300 seconds - Expensive aggregation queries
-    """
-    cache = get_cache()
-    cache_key = f"admin_dashboard_stats_{int(datetime.utcnow().timestamp() // 300)}"
+    cache = current_app.cache
+    cache_key = 'admin_dashboard_stats'
     
     cached_data = cache.get(cache_key)
     if cached_data is not None:
         return jsonify(cached_data), 200
     
     try:
-        # Total parking lots
         total_lots = ParkingLot.query.count()
-        
-        # Total spots
         total_spots = db.session.query(func.sum(ParkingLot.number_of_spots)).scalar() or 0
-        
-        # Occupied spots
         occupied_spots = ParkingSpot.query.filter_by(status="O").count()
-        
-        # Available spots
         available_spots = total_spots - occupied_spots
-        
-        # Active reservations
         active_reservations = Reservation.query.filter_by(status="active").count()
-        
-        # Total users
         total_users = User.query.filter_by(role="user").count()
         
-        # Today's revenue
         today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         today_revenue = db.session.query(func.sum(Reservation.parking_cost)).filter(
             Reservation.leaving_timestamp >= today_start,
             Reservation.status == "completed"
         ).scalar() or 0
         
-        # This month's revenue
         month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         month_revenue = db.session.query(func.sum(Reservation.parking_cost)).filter(
             Reservation.leaving_timestamp >= month_start,
@@ -330,7 +284,7 @@ def dashboard_stats():
             "month_revenue": round(month_revenue, 2)
         }
         
-        cache.get(cache_key, result, timeout=300)
+        cache.set(cache_key, result, timeout=300)
         return jsonify(result), 200
         
     except Exception as e:

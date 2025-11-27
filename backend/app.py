@@ -23,31 +23,34 @@ def create_app():
     app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "change-me")
     app.config["PROPAGATE_EXCEPTIONS"] = True
     
-    # Mail configuration - Fixed
+    # Mail configuration
     app.config["MAIL_SERVER"] = os.getenv("MAIL_SERVER", "smtp.gmail.com")
     app.config["MAIL_PORT"] = int(os.getenv("MAIL_PORT", 587))
     app.config["MAIL_USE_TLS"] = os.getenv("MAIL_USE_TLS", "True").lower() == "true"
     app.config["MAIL_USE_SSL"] = os.getenv("MAIL_USE_SSL", "False").lower() == "true"
     app.config["MAIL_USERNAME"] = os.getenv("MAIL_USERNAME")
     app.config["MAIL_PASSWORD"] = os.getenv("MAIL_PASSWORD")
-    app.config["MAIL_DEFAULT_SENDER"] = os.getenv("MAIL_USERNAME")  # Use same as username
+    app.config["MAIL_DEFAULT_SENDER"] = os.getenv("MAIL_USERNAME")
 
+    # Cache configuration
     cache_type = os.getenv("CACHE_TYPE", "RedisCache")
     
     if cache_type == "RedisCache":
         app.config["CACHE_TYPE"] = "RedisCache"
-        app.config["CACHE_REDIS_URL"] = os.getenv("REDIS_URL", "redis://localhost:6379/1")  # Use DB 1 for cache
-        app.config["CACHE_DEFAULT_TIMEOUT"] = 300  # 5 minutes default
+        app.config["CACHE_REDIS_URL"] = os.getenv("REDIS_URL", "redis://localhost:6379/1")
+        app.config["CACHE_DEFAULT_TIMEOUT"] = 300
         app.config["CACHE_KEY_PREFIX"] = "parking_cache:"
     else:
-        # Fallback to SimpleCache for development
         app.config["CACHE_TYPE"] = "SimpleCache"
         app.config["CACHE_DEFAULT_TIMEOUT"] = 300
 
     db.init_app(app)
     jwt = JWTManager(app)
-    mail.init_app(app)  # Initialize mail with app
-    cache.init_app(app)  # Initialize cache with app
+    mail.init_app(app)
+    cache.init_app(app)
+    
+    # Store cache in app config for easy access
+    app.cache = cache
 
     # Import routes AFTER cache is initialized
     from routes.auth_routes import auth_bp

@@ -9,9 +9,8 @@ import os
 
 user_bp = Blueprint("user", __name__)
 
-def get_cache():
-    """Get cache instance from current app"""
-    return current_app.extensions['cache']
+# REMOVE THIS LINE:
+# from app import cache
 
 @user_bp.route("/lots", methods=["GET"])
 @jwt_required()
@@ -20,17 +19,16 @@ def list_available_lots():
     List lots with available counts. Accessible to logged in users.
     CACHED: 60 seconds - Frequently accessed, changes moderately
     """
-    cache = get_cache()
+    # Get cache from current_app inside the function
+    from flask import current_app
+    cache = current_app.cache
     
-    # Create cache key that includes timestamp (rounded to 60 seconds)
-    cache_key = f"user_lots_{int(datetime.utcnow().timestamp() // 60)}"
+    cache_key = 'user_lots'
     
-    # Try to get from cache
     cached_data = cache.get(cache_key)
     if cached_data is not None:
         return jsonify(cached_data), 200
     
-    # If not in cache, fetch from database
     lots = ParkingLot.query.order_by(ParkingLot.created_at.desc()).all()
     out = []
                     
@@ -48,39 +46,29 @@ def list_available_lots():
             "pincode": l.pincode
         })
     
-    # Store in cache
-    cache.get(cache_key, out, timeout=60)
-    
+    cache.set(cache_key, out, timeout=60)
     return jsonify(out), 200
 
 @user_bp.route("/book", methods=["POST"])
 @jwt_required()
 def book_spot():
-    """
-    Book first available spot in a lot for the current user.
-    Request body: {"lot_id": <int>}
-    NO CACHE: Write operation that modifies data
-    """
     user_id = get_jwt_identity()
     data = request.get_json() or {}
     lot_id = data.get("lot_id")
     if not lot_id:
         return jsonify({"msg": "lot_id required"}), 400
 
-    # Check if user already has an active reservation
     existing = Reservation.query.filter_by(user_id=user_id, status="active").first()
     if existing:
         return jsonify({"msg": "You already have an active reservation", "reservation_id": existing.id}), 409
 
     try:
         with db.session.begin_nested():
-            # find first available spot in the requested lot
             spot = ParkingSpot.query.filter_by(lot_id=lot_id, status="A").order_by(ParkingSpot.spot_number).with_for_update().first()
 
             if not spot:
                 return jsonify({"msg": "no available spot in this lot"}), 409
 
-            # Marking spot occupied and creating reservation
             spot.status = "O"
             reservation = Reservation(
                 spot_id=spot.id,
@@ -91,20 +79,13 @@ def book_spot():
             )
             db.session.add(reservation)
         
-        # commit transaction
         db.session.commit()
         
-        # INVALIDATE CACHE after booking - clear relevant cache patterns
-        cache = get_cache()
-        # Clear user lots cache by clearing all possible keys in the last minute
-        current_minute = int(datetime.utcnow().timestamp() // 60)
-        for i in range(2):  # Clear current and previous minute
-            cache.delete(f"user_lots_{current_minute - i}")
-            cache.delete(f"admin_lots_{int((current_minute - i) * 60 // 180)}")
-        
-        # Clear user's reservations cache
-        for i in range(2):
-            cache.delete(f"my_reservations_{user_id}_{current_minute - i}")
+        # INVALIDATE CACHE
+        cache = current_app.cache
+        cache.delete('user_lots')
+        cache.delete('admin_lots')
+        cache.delete(f'my_reservations_{user_id}')
         
         return jsonify({
             "msg": "Parking spot booked successfully",
@@ -121,11 +102,6 @@ def book_spot():
 @user_bp.route("/leave", methods=["POST"])
 @jwt_required()
 def leave_spot():
-    """
-    Release an active reservation
-    Request body: {"reservation_id": <int>}
-    NO CACHE: Write operation that modifies data
-    """
     user_id = get_jwt_identity()
     data = request.get_json() or {}
     reservation_id = data.get("reservation_id")
@@ -145,17 +121,14 @@ def leave_spot():
         price_per_hour = res.spot.lot.price_per_hour if res.spot and res.spot.lot else 0.0
         res.parking_cost = hours * price_per_hour
         res.status = "completed"
-        # get spot available
         res.spot.status = "A"
         db.session.commit()
         
-        # INVALIDATE CACHE after leaving
-        cache = get_cache()
-        current_minute = int(datetime.utcnow().timestamp() // 60)
-        for i in range(2):
-            cache.delete(f"user_lots_{current_minute - i}")
-            cache.delete(f"admin_lots_{int((current_minute - i) * 60 // 180)}")
-            cache.delete(f"my_reservations_{user_id}_{current_minute - i}")
+        # INVALIDATE CACHE
+        cache = current_app.cache
+        cache.delete('user_lots')
+        cache.delete('admin_lots')
+        cache.delete(f'my_reservations_{user_id}')
         
         return jsonify({
             "msg": "released",
@@ -170,15 +143,9 @@ def leave_spot():
 @user_bp.route("/my_reservations", methods=["GET"])
 @jwt_required()
 def my_reservations():
-    """
-    Get user's reservations
-    CACHED: 120 seconds per user - Personal data that changes occasionally
-    """
-    cache = get_cache()
     user_id = get_jwt_identity()
-    
-    # Create user-specific cache key with 2-minute buckets
-    cache_key = f"my_reservations_{user_id}_{int(datetime.utcnow().timestamp() // 120)}"
+    cache = current_app.cache
+    cache_key = f'my_reservations_{user_id}'
     
     cached_data = cache.get(cache_key)
     if cached_data is not None:
@@ -199,7 +166,7 @@ def my_reservations():
             "status": r.status
         })
     
-    cache.get(cache_key, out, timeout=120)
+    cache.set(cache_key, out, timeout=120)
     return jsonify(out), 200
 
 
@@ -208,22 +175,16 @@ def my_reservations():
 @user_bp.route("/export/trigger", methods=["POST"])
 @jwt_required()
 def trigger_export():
-    """
-    Trigger CSV export job for current user
-    NO CACHE: Trigger operation
-    """
     from tasks.export_csv import export_user_reservations
     
     user_id = get_jwt_identity()
-    
     user = User.query.get(user_id)
     if not user:
         return jsonify({"msg": "User not found"}), 404
     
     if not user.email:
-        return jsonify({"msg": "Email not get. Cannot send export notification."}), 400
+        return jsonify({"msg": "Email not set. Cannot send export notification."}), 400
     
-    # Check if user has any pending or processing jobs
     existing_job = ExportJob.query.filter(
         ExportJob.user_id == user_id,
         ExportJob.status.in_(["pending", "processing"])
@@ -241,7 +202,6 @@ def trigger_export():
         db.session.add(job)
         db.session.commit()
         
-        # Trigger async task
         task = export_user_reservations.delay(user_id, user.email, user.username)
         
         return jsonify({
@@ -259,19 +219,7 @@ def trigger_export():
 @user_bp.route("/export/status", methods=["GET"])
 @jwt_required()
 def export_status():
-    """
-    Get status of user's export jobs
-    CACHED: 30 seconds per user
-    """
-    cache = get_cache()
     user_id = get_jwt_identity()
-    
-    # Create user-specific cache key
-    cache_key = f"export_status_{user_id}_{int(datetime.utcnow().timestamp() // 30)}"
-    
-    cached_data = cache.get(cache_key)
-    if cached_data is not None:
-        return jsonify(cached_data), 200
     
     jobs = ExportJob.query.filter_by(user_id=user_id).order_by(
         ExportJob.requested_at.desc()
@@ -287,20 +235,13 @@ def export_status():
             "file_available": job.status == "done" and job.file_path is not None
         })
     
-    cache.get(cache_key, out, timeout=30)
-    
     return jsonify(out), 200
 
 
 @user_bp.route("/export/download/<int:job_id>", methods=["GET"])
 @jwt_required()
 def download_export(job_id):
-    """
-    Download CSV file for completed export job
-    NO CACHE: File download
-    """
     user_id = get_jwt_identity()
-    
     job = ExportJob.query.filter_by(id=job_id, user_id=user_id).first()
     
     if not job:
