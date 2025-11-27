@@ -47,8 +47,9 @@ def create_app():
     db.init_app(app)
     jwt = JWTManager(app)
     mail.init_app(app)  # Initialize mail with app
-    cache.init_app(app)
+    cache.init_app(app)  # Initialize cache with app
 
+    # Import routes AFTER cache is initialized
     from routes.auth_routes import auth_bp
     from routes.admin_routes import admin_bp
     from routes.user_routes import user_bp

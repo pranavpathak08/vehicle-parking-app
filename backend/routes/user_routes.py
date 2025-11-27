@@ -1,6 +1,6 @@
 # parking_routes.py
 
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, send_file, current_app
 from models import db, ParkingLot, ParkingSpot, Reservation, User, ExportJob
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
@@ -9,17 +9,28 @@ import os
 
 user_bp = Blueprint("user", __name__)
 
-# Import cache from app
-from app import cache
+def get_cache():
+    """Get cache instance from current app"""
+    return current_app.extensions['cache']
 
 @user_bp.route("/lots", methods=["GET"])
 @jwt_required()
-@cache.cached(timeout=60, query_string=True)  # Cache for 60 seconds
 def list_available_lots():
     """
     List lots with available counts. Accessible to logged in users.
     CACHED: 60 seconds - Frequently accessed, changes moderately
     """
+    cache = get_cache()
+    
+    # Create cache key that includes timestamp (rounded to 60 seconds)
+    cache_key = f"user_lots_{int(datetime.utcnow().timestamp() // 60)}"
+    
+    # Try to get from cache
+    cached_data = cache.get(cache_key)
+    if cached_data is not None:
+        return jsonify(cached_data), 200
+    
+    # If not in cache, fetch from database
     lots = ParkingLot.query.order_by(ParkingLot.created_at.desc()).all()
     out = []
                     
@@ -36,6 +47,10 @@ def list_available_lots():
             "address": l.address,
             "pincode": l.pincode
         })
+    
+    # Store in cache
+    cache.get(cache_key, out, timeout=60)
+    
     return jsonify(out), 200
 
 @user_bp.route("/book", methods=["POST"])
@@ -79,9 +94,17 @@ def book_spot():
         # commit transaction
         db.session.commit()
         
-        # INVALIDATE CACHE after booking
-        cache.delete_memoized(list_available_lots)
-        cache.delete_memoized(my_reservations)
+        # INVALIDATE CACHE after booking - clear relevant cache patterns
+        cache = get_cache()
+        # Clear user lots cache by clearing all possible keys in the last minute
+        current_minute = int(datetime.utcnow().timestamp() // 60)
+        for i in range(2):  # Clear current and previous minute
+            cache.delete(f"user_lots_{current_minute - i}")
+            cache.delete(f"admin_lots_{int((current_minute - i) * 60 // 180)}")
+        
+        # Clear user's reservations cache
+        for i in range(2):
+            cache.delete(f"my_reservations_{user_id}_{current_minute - i}")
         
         return jsonify({
             "msg": "Parking spot booked successfully",
@@ -122,13 +145,17 @@ def leave_spot():
         price_per_hour = res.spot.lot.price_per_hour if res.spot and res.spot.lot else 0.0
         res.parking_cost = hours * price_per_hour
         res.status = "completed"
-        # set spot available
+        # get spot available
         res.spot.status = "A"
         db.session.commit()
         
         # INVALIDATE CACHE after leaving
-        cache.delete_memoized(list_available_lots)
-        cache.delete_memoized(my_reservations)
+        cache = get_cache()
+        current_minute = int(datetime.utcnow().timestamp() // 60)
+        for i in range(2):
+            cache.delete(f"user_lots_{current_minute - i}")
+            cache.delete(f"admin_lots_{int((current_minute - i) * 60 // 180)}")
+            cache.delete(f"my_reservations_{user_id}_{current_minute - i}")
         
         return jsonify({
             "msg": "released",
@@ -142,13 +169,21 @@ def leave_spot():
 
 @user_bp.route("/my_reservations", methods=["GET"])
 @jwt_required()
-@cache.memoize(timeout=120)  # Cache per user for 2 minutes
 def my_reservations():
     """
     Get user's reservations
     CACHED: 120 seconds per user - Personal data that changes occasionally
     """
+    cache = get_cache()
     user_id = get_jwt_identity()
+    
+    # Create user-specific cache key with 2-minute buckets
+    cache_key = f"my_reservations_{user_id}_{int(datetime.utcnow().timestamp() // 120)}"
+    
+    cached_data = cache.get(cache_key)
+    if cached_data is not None:
+        return jsonify(cached_data), 200
+    
     reservations = Reservation.query.filter_by(user_id=user_id).order_by(Reservation.created_at.desc()).all()
     out = []
     for r in reservations:
@@ -163,6 +198,8 @@ def my_reservations():
             "parking_cost": r.parking_cost,
             "status": r.status
         })
+    
+    cache.get(cache_key, out, timeout=120)
     return jsonify(out), 200
 
 
@@ -184,7 +221,7 @@ def trigger_export():
         return jsonify({"msg": "User not found"}), 404
     
     if not user.email:
-        return jsonify({"msg": "Email not set. Cannot send export notification."}), 400
+        return jsonify({"msg": "Email not get. Cannot send export notification."}), 400
     
     # Check if user has any pending or processing jobs
     existing_job = ExportJob.query.filter(
@@ -221,13 +258,20 @@ def trigger_export():
 
 @user_bp.route("/export/status", methods=["GET"])
 @jwt_required()
-@cache.memoize(timeout=30)  # Cache for 30 seconds - Status changes frequently
 def export_status():
     """
     Get status of user's export jobs
     CACHED: 30 seconds per user
     """
+    cache = get_cache()
     user_id = get_jwt_identity()
+    
+    # Create user-specific cache key
+    cache_key = f"export_status_{user_id}_{int(datetime.utcnow().timestamp() // 30)}"
+    
+    cached_data = cache.get(cache_key)
+    if cached_data is not None:
+        return jsonify(cached_data), 200
     
     jobs = ExportJob.query.filter_by(user_id=user_id).order_by(
         ExportJob.requested_at.desc()
@@ -242,6 +286,8 @@ def export_status():
             "completed_at": job.completed_at.isoformat() if job.completed_at else None,
             "file_available": job.status == "done" and job.file_path is not None
         })
+    
+    cache.get(cache_key, out, timeout=30)
     
     return jsonify(out), 200
 

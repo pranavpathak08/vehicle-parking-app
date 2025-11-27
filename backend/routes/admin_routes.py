@@ -1,5 +1,5 @@
 # admin_routes.py
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from models import db, ParkingLot, ParkingSpot, Reservation, User
 from flask_jwt_extended import jwt_required, get_jwt
 from datetime import datetime
@@ -8,8 +8,9 @@ from functools import wraps
 
 admin_bp = Blueprint("admin", __name__)
 
-# Import cache from app
-from app import cache
+def get_cache():
+    """Get cache instance from current app"""
+    return current_app.extensions['cache']
 
 def admin_required(fn):
     @wraps(fn)
@@ -59,7 +60,11 @@ def create_lot():
         db.session.commit()
         
         # INVALIDATE CACHE after creating lot
-        cache.delete_memoized(list_lots)
+        cache = get_cache()
+        current_bucket = int(datetime.utcnow().timestamp() // 180)
+        for i in range(2):
+            cache.delete(f"admin_lots_{current_bucket - i}")
+            cache.delete(f"user_lots_{int((current_bucket - i) * 180 // 60)}")
         
         return jsonify({
             "msg": "lot created",
@@ -72,12 +77,20 @@ def create_lot():
 
 @admin_bp.route("/lots", methods=["GET"])
 @admin_required
-@cache.cached(timeout=180, key_prefix='admin_lots')  # Cache for 3 minutes
 def list_lots():
     """
     List all parking lots with availability
     CACHED: 180 seconds - Admin dashboard data
     """
+    cache = get_cache()
+    
+    # Manual caching with timestamp-based key
+    cache_key = f"admin_lots_{int(datetime.utcnow().timestamp() // 180)}"
+    
+    cached_data = cache.get(cache_key)
+    if cached_data is not None:
+        return jsonify(cached_data), 200
+    
     lots = ParkingLot.query.order_by(ParkingLot.created_at.desc()).all()
     out = []
     for l in lots:
@@ -95,17 +108,25 @@ def list_lots():
             "pincode": l.pincode,
             "created_at": l.created_at.isoformat()
         })
+    
+    cache.get(cache_key, out, timeout=180)
     return jsonify(out), 200
 
 
 @admin_bp.route("/lots/<int:lot_id>/spots", methods=["GET"])
 @admin_required
-@cache.memoize(timeout=60)  # Cache for 60 seconds per lot
 def list_spots_for_lot(lot_id):
     """
     List all spots in a parking lot
     CACHED: 60 seconds per lot - Spot status changes moderately
     """
+    cache = get_cache()
+    cache_key = f"admin_spots_{lot_id}_{int(datetime.utcnow().timestamp() // 60)}"
+    
+    cached_data = cache.get(cache_key)
+    if cached_data is not None:
+        return jsonify(cached_data), 200
+    
     lot = ParkingLot.query.get(lot_id)
     if not lot:
         return jsonify({"msg": "lot not found"}), 404
@@ -131,7 +152,11 @@ def list_spots_for_lot(lot_id):
                 "status": r.status
             }
         out.append(spot_info)
-    return jsonify({"lot": {"id": lot.id, "name":lot.name}, "spots":out}), 200
+    
+    result = {"lot": {"id": lot.id, "name": lot.name}, "spots": out}
+    cache.get(cache_key, result, timeout=60)
+    
+    return jsonify(result), 200
 
 
 @admin_bp.route("/lots/<int:lot_id>", methods=["PUT"])
@@ -198,8 +223,11 @@ def update_lot(lot_id):
         db.session.commit()
         
         # INVALIDATE CACHE after updating lot
-        cache.delete_memoized(list_lots)
-        cache.delete_memoized(list_spots_for_lot, lot_id)
+        cache = get_cache()
+        current_bucket = int(datetime.utcnow().timestamp() // 180)
+        for i in range(2):
+            cache.delete(f"admin_lots_{current_bucket - i}")
+            cache.delete(f"admin_spots_{lot_id}_{int(datetime.utcnow().timestamp() // 60) - i}")
         
         return jsonify({"msg": "lot updated", "lot_id": lot.id}), 200
     except Exception as e:
@@ -229,8 +257,11 @@ def delete_lot(lot_id):
         db.session.commit()
         
         # INVALIDATE CACHE after deleting lot
-        cache.delete_memoized(list_lots)
-        cache.delete_memoized(list_spots_for_lot, lot_id)
+        cache = get_cache()
+        current_bucket = int(datetime.utcnow().timestamp() // 180)
+        for i in range(2):
+            cache.delete(f"admin_lots_{current_bucket - i}")
+            cache.delete(f"admin_spots_{lot_id}_{int(datetime.utcnow().timestamp() // 60) - i}")
         
         return jsonify({"msg": "lot deleted"}), 200
     except Exception as e:
@@ -242,12 +273,18 @@ def delete_lot(lot_id):
 
 @admin_bp.route("/dashboard/stats", methods=["GET"])
 @admin_required
-@cache.cached(timeout=300, key_prefix='admin_dashboard_stats')  # Cache for 5 minutes
 def dashboard_stats():
     """
     Get dashboard statistics
     CACHED: 300 seconds - Expensive aggregation queries
     """
+    cache = get_cache()
+    cache_key = f"admin_dashboard_stats_{int(datetime.utcnow().timestamp() // 300)}"
+    
+    cached_data = cache.get(cache_key)
+    if cached_data is not None:
+        return jsonify(cached_data), 200
+    
     try:
         # Total parking lots
         total_lots = ParkingLot.query.count()
@@ -281,7 +318,7 @@ def dashboard_stats():
             Reservation.status == "completed"
         ).scalar() or 0
         
-        return jsonify({
+        result = {
             "total_lots": total_lots,
             "total_spots": int(total_spots),
             "occupied_spots": occupied_spots,
@@ -291,7 +328,10 @@ def dashboard_stats():
             "total_users": total_users,
             "today_revenue": round(today_revenue, 2),
             "month_revenue": round(month_revenue, 2)
-        }), 200
+        }
+        
+        cache.get(cache_key, result, timeout=300)
+        return jsonify(result), 200
         
     except Exception as e:
         return jsonify({"msg": "error fetching stats", "error": str(e)}), 500
