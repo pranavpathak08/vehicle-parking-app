@@ -19,3 +19,6 @@ instance/
 
 # Celery Beat
 celerybeat-schedule
+
+node_modules
+package-lock.json
