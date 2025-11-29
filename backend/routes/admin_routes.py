@@ -8,9 +8,6 @@ from functools import wraps
 
 admin_bp = Blueprint("admin", __name__)
 
-# REMOVE THIS LINE:
-# from app import cache
-
 def admin_required(fn):
     @wraps(fn)
     @jwt_required()
@@ -99,6 +96,31 @@ def list_lots():
     
     cache.set(cache_key, out, timeout=180)
     return jsonify(out), 200
+
+
+@admin_bp.route("/lots/<int:lot_id>", methods=["GET"])
+@admin_required
+def get_lot(lot_id):
+    """Get single lot details for editing"""
+    lot = ParkingLot.query.get(lot_id)
+    if not lot:
+        return jsonify({"msg": "lot not found"}), 404
+    
+    total = lot.number_of_spots
+    occupied = lot.spots.filter_by(status="O").count()
+    available = total - occupied
+    
+    return jsonify({
+        "id": lot.id,
+        "name": lot.name,
+        "price_per_hour": lot.price_per_hour,
+        "number_of_spots": total,
+        "occupied": occupied,
+        "available": available,
+        "address": lot.address,
+        "pincode": lot.pincode,
+        "created_at": lot.created_at.isoformat()
+    }), 200
 
 
 @admin_bp.route("/lots/<int:lot_id>/spots", methods=["GET"])

@@ -56,6 +56,7 @@ export const userAPI = {
 export const adminAPI = {
   getDashboardStats: () => api.get('/admin/dashboard/stats'),
   getLots: () => api.get('/admin/lots'),
+  getLot: (lotId) => api.get(`/admin/lots/${lotId}`),
   createLot: (lotData) => api.post('/admin/lots', lotData),
   updateLot: (lotId, lotData) => api.put(`/admin/lots/${lotId}`, lotData),
   deleteLot: (lotId) => api.delete(`/admin/lots/${lotId}`),

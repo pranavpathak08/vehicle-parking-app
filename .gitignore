@@ -22,3 +22,8 @@ celerybeat-schedule
 
 node_modules
 package-lock.json
+
+
+backend/exports/
+exports/
+*.csv
