@@ -40,6 +40,3 @@ celery.conf.update(
         }
     }
 )
-
-# DO NOT import tasks here - this causes circular imports
-# Tasks will be auto-discovered when imported elsewhere
