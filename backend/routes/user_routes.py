@@ -3,14 +3,11 @@
 from flask import Blueprint, request, jsonify, send_file, current_app
 from models import db, ParkingLot, ParkingSpot, Reservation, User, ExportJob
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
 import os
 
 user_bp = Blueprint("user", __name__)
-
-# REMOVE THIS LINE:
-# from app import cache
 
 @user_bp.route("/lots", methods=["GET"])
 @jwt_required()
@@ -185,14 +182,19 @@ def trigger_export():
     if not user.email:
         return jsonify({"msg": "Email not set. Cannot send export notification."}), 400
     
+    # FIXED: Check for jobs that are truly in progress (within last 5 minutes)
+    # This prevents blocking users from requesting new exports after previous ones completed
+    five_minutes_ago = datetime.utcnow() - timedelta(minutes=5)
+    
     existing_job = ExportJob.query.filter(
         ExportJob.user_id == user_id,
-        ExportJob.status.in_(["pending", "processing"])
+        ExportJob.status.in_(["pending", "processing"]),
+        ExportJob.requested_at >= five_minutes_ago
     ).first()
     
     if existing_job:
         return jsonify({
-            "msg": "Export already in progress",
+            "msg": "Export already in progress. Please wait a few minutes before requesting again.",
             "job_id": existing_job.id,
             "status": existing_job.status
         }), 409

@@ -12,20 +12,20 @@ def export_user_reservations(self, user_id, user_email, username):
     """
     
     from app import create_app
-    from models import Reservation, ExportJob
+    from models import Reservation, ExportJob, db
     
     app = create_app()
     mail = Mail(app)
     
-    # Update job status to processing
+    # Find the pending job for this user
     with app.app_context():
-        job = ExportJob.query.get(self.request.id.split('-')[-1]) if '-' in str(self.request.id) else None
-        # For simplicity, we'll track by user_id and update the latest pending job
-        job = ExportJob.query.filter_by(user_id=user_id, status="pending").order_by(ExportJob.requested_at.desc()).first()
+        job = ExportJob.query.filter_by(
+            user_id=user_id, 
+            status="pending"
+        ).order_by(ExportJob.requested_at.desc()).first()
         
         if job:
             job.status = "processing"
-            from models import db
             db.session.commit()
 
     try:
@@ -34,11 +34,41 @@ def export_user_reservations(self, user_id, user_email, username):
             reservations = Reservation.query.filter_by(user_id=user_id).order_by(Reservation.created_at.desc()).all()
             
             if not reservations:
-                # Update job status
+                # Update job status to done (even with no data)
                 if job:
-                    job.status = "failed"
-                    from models import db
+                    job.status = "done"
+                    job.completed_at = datetime.utcnow()
                     db.session.commit()
+                
+                # Send email notification about empty export
+                try:
+                    msg = Message(
+                        subject="📄 Your Parking History Export",
+                        sender=os.getenv("MAIL_USERNAME"),
+                        recipients=[user_email]
+                    )
+                    
+                    msg.html = f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <body style="font-family: Arial, sans-serif; padding: 20px;">
+                        <div style="max-width: 600px; margin: 0 auto; background-color: #f9f9f9; padding: 30px; border-radius: 10px;">
+                            <h2 style="color: #667eea;">📄 Export Complete</h2>
+                            <p>Hello {username},</p>
+                            <p>Your parking history export was requested, but you currently have no reservations to export.</p>
+                            <p>Once you start booking parking spots, you'll be able to export your history.</p>
+                            <p style="margin-top: 30px; color: #666; font-size: 14px;">
+                                Best regards,<br>
+                                Vehicle Parking Management Team
+                            </p>
+                        </div>
+                    </body>
+                    </html>
+                    """
+                    mail.send(msg)
+                except Exception as e:
+                    print(f"✗ Failed to send email: {str(e)}")
+                
                 return "No reservations found for user"
             
             # Prepare data for CSV
@@ -91,7 +121,6 @@ def export_user_reservations(self, user_id, user_email, username):
                     job.status = "done"
                     job.file_path = filepath
                     job.completed_at = datetime.utcnow()
-                    from models import db
                     db.session.commit()
             
             # Send email notification with CSV attachment
@@ -149,7 +178,6 @@ def export_user_reservations(self, user_id, user_email, username):
         with app.app_context():
             if job:
                 job.status = "failed"
-                from models import db
                 db.session.commit()
         
         print(f"✗ Export failed: {str(e)}")
